@@ -1,5 +1,6 @@
 package com.plcoding.wearosstopwatch.presentation
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -15,15 +16,60 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.wear.compose.material.ContentAlpha
 import androidx.wear.compose.material.LocalContentColor
 import androidx.wear.compose.material.Text
 
+import kotlinx.coroutines.*
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
+
 class MainActivity : ComponentActivity() {
+    private var healthConnectManager: HealthConnectManager? = null
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        //Init the health connect manager
+        healthConnectManager = HealthConnectManager(this)
+        val context: Context = this
+        val packageName = packageName
+        val activityRef = this
+
+        val initAPIsJob = CoroutineScope(Dispatchers.Default).launch {
+            //We just set this so it can't be null!
+            val status = healthConnectManager!!.initAndRequestPermissions(context, packageName)
+            val viewModel = ViewModelProvider(activityRef)[OODViewModel::class.java]
+            viewModel.updateSDKState(status)
+            var currentStatus = status
+
+            //Probably a better way of doing this, but we need to wait until (/if) the status is SUCCESS. Use a suspend function!
+            suspend fun WaitForSDK(): Unit {
+                val newStatus = healthConnectManager!!.GetStatus()
+                if (newStatus != currentStatus) {
+                    //Update the status and *maybe* return
+                    currentStatus = newStatus
+                    viewModel.updateSDKState(newStatus)
+                    if (newStatus == HealthConnectStatus.SUCCESS) {
+                        return
+                    }
+                } else
+                {
+                    delay(1000)
+                }
+            }
+
+            val waitJob = CoroutineScope(Dispatchers.Default).launch {
+                WaitForSDK()
+            }
+            //Wait until the SDK is available
+            waitJob.join()
+
+            //Create callback to update vitals data (will not terminate)
+            healthConnectManager!!.CollectData()
+        }
+
         setContent {
             WatchOSApp()
         }
@@ -31,6 +77,38 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
+fun WatchOSApp() {
+    val viewModel = viewModel<OODViewModel>()
+    val overdoseState by viewModel.overdoseState.collectAsStateWithLifecycle()
+    val bloodOxygenLevel by viewModel.bloodOxygenLevel.collectAsStateWithLifecycle()
+    val respiratoryRate by viewModel.respiratoryRate.collectAsStateWithLifecycle()
+    val SDKState by viewModel.SDKState.collectAsStateWithLifecycle()
+
+    //SDK availability screens
+    Column(
+        modifier = Modifier
+            .padding(16.dp)
+            .fillMaxWidth()
+            .fillMaxHeight(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        when (SDKState) {
+            HealthConnectStatus.SDK_UNAVAILABLE -> SDK_Unavailable()
+            HealthConnectStatus.APP_REQUESTED -> AppRequested()
+            HealthConnectStatus.PERMISSION_REQUESTED -> PermissionRequested()
+            HealthConnectStatus.PERMISSION_DENIED -> PermissionDenied()
+            HealthConnectStatus.SUCCESS -> MainAppScreen(
+                ODstate = overdoseState,
+                breathingRate = bloodOxygenLevel,
+                oxygenSaturation = respiratoryRate
+            )
+        }
+    }
+}
+
+//Removed but kept as an archive to guide new UI creation
+/*@Composable
 fun WatchOSApp() {
     val viewModel = viewModel<OODViewModel>()
     val overdoseState by viewModel.overdoseState.collectAsStateWithLifecycle()
@@ -126,4 +204,4 @@ fun WatchOSApp() {
             modifier = Modifier.padding(bottom = 4.dp),
         )
     }
-}
+}*/
